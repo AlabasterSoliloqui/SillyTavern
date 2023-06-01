@@ -7,13 +7,14 @@ import {
     online_status,
     main_api,
     api_server,
-    nai_settings,
     api_server_textgenerationwebui,
     is_send_press,
     getTokenCount,
     menu_type,
 
+
 } from "../script.js";
+
 
 import {
     power_user,
@@ -21,16 +22,24 @@ import {
 } from "./power-user.js";
 
 import { LoadLocal, SaveLocal, ClearLocal, CheckLocal, LoadLocalBool } from "./f-localStorage.js";
-import { selected_group, is_group_generating } from "./group-chats.js";
-import { oai_settings } from "./openai.js";
-import { poe_settings } from "./poe.js";
+import { selected_group, is_group_generating, getGroupAvatar, groups } from "./group-chats.js";
+import {
+    SECRET_KEYS,
+    secret_state,
+} from "./secrets.js";
+import { sortByCssOrder } from "./utils.js";
 
 var NavToggle = document.getElementById("nav-toggle");
+
 var RPanelPin = document.getElementById("rm_button_panel_pin");
 var LPanelPin = document.getElementById("lm_button_panel_pin");
-var SelectedCharacterTab = document.getElementById("rm_button_selected_ch");
+var WIPanelPin = document.getElementById("WI_panel_pin");
+
 var RightNavPanel = document.getElementById("right-nav-panel");
-var LeftNavPanel = document.getElementById("left-nav-panel")
+var LeftNavPanel = document.getElementById("left-nav-panel");
+var WorldInfo = document.getElementById("WorldInfo");
+
+var SelectedCharacterTab = document.getElementById("rm_button_selected_ch");
 var AdvancedCharDefsPopup = document.getElementById("character_popup");
 var ConfirmationPopup = document.getElementById("dialogue_popup");
 var AutoConnectCheckbox = document.getElementById("auto-connect-checkbox");
@@ -97,12 +106,22 @@ function waitForElement(querySelector, timeout) {
 waitForElement("#expression-image", 10000).then(function () {
 
     dragElement(document.getElementById("expression-holder"));
+    dragElement(document.getElementById("floatingPrompt"));
+
 }).catch(() => {
     console.log("expression holder not loaded yet");
 });
 
+waitForElement("#floatingPrompt", 10000).then(function () {
+
+    dragElement(document.getElementById("floatingPrompt"));
+
+}).catch(() => {
+    console.log("floating prompt box not loaded yet");
+});
+
 // Device detection
-const deviceInfo = await getDeviceInfo();
+export const deviceInfo = await getDeviceInfo();
 
 async function getDeviceInfo() {
     try {
@@ -116,7 +135,7 @@ async function getDeviceInfo() {
     }
 }
 
-function isMobile() {
+export function isMobile() {
     const mobileTypes = ['smartphone', 'tablet', 'phablet', 'feature phone', 'portable media player'];
     return mobileTypes.includes(deviceInfo?.device?.type);
 }
@@ -255,42 +274,69 @@ export function RA_CountCharTokens() {
 //Auto Load Last Charcter -- (fires when active_character is defined and auto_load_chat is true)
 async function RA_autoloadchat() {
     if (document.getElementById('CharID0') !== null) {
-        //console.log('char list loaded! clicking activeChar');
-        var CharToAutoLoad = document.getElementById('CharID' + LoadLocal('ActiveChar'));
-        //console.log(CharToAutoLoad);
-        let autoLoadGroup = document.querySelector(`.group_select[grid="${LoadLocal('ActiveGroup')}"]`);
-        //console.log(autoLoadGroup);
-        if (CharToAutoLoad != null) {
-
-
-            // console.log('--ALC - clicking character');
-            CharToAutoLoad.click();
-            CharToAutoLoad.click();
-
+        var charToAutoLoad = document.getElementById('CharID' + LoadLocal('ActiveChar'));
+        let groupToAutoLoad = document.querySelector(`.group_select[grid="${LoadLocal('ActiveGroup')}"]`);
+        if (charToAutoLoad != null) {
+            $(charToAutoLoad).click();
         }
-        else if (autoLoadGroup != null) {
-            //console.log('--ALC - clicking group');
-            autoLoadGroup.click();
-            autoLoadGroup.click();
+        else if (groupToAutoLoad != null) {
+            $(groupToAutoLoad).click();
         }
-        else {
-            console.log(CharToAutoLoad + ' ActiveChar local var - not found: ' + LoadLocal('ActiveChar'));
+
+        // if the charcter list hadn't been loaded yet, try again. 
+    } else { setTimeout(RA_autoloadchat, 100); }
+}
+
+export async function favsToHotswap() {
+    const selector = ['#rm_print_characters_block .character_select', '#rm_print_characters_block .group_select'].join(',');
+    const container = $('#right-nav-panel .hotswap');
+    const template = $('#hotswap_template .hotswapAvatar');
+    container.empty();
+    const maxCount = 6;
+    let count = 0;
+
+    $(selector).sort(sortByCssOrder).each(function () {
+        if ($(this).hasClass('is_fav') && count < maxCount) {
+            const isCharacter = $(this).hasClass('character_select');
+            const isGroup = $(this).hasClass('group_select');
+            const grid = Number($(this).attr('grid'));
+            const chid = Number($(this).attr('chid'));
+            let thisHotSwapSlot = template.clone();
+            thisHotSwapSlot.toggleClass('character_select', isCharacter);
+            thisHotSwapSlot.toggleClass('group_select', isGroup);
+            thisHotSwapSlot.attr('grid', isGroup ? grid : '');
+            thisHotSwapSlot.attr('chid', isCharacter ? chid : '');
+            thisHotSwapSlot.data('id', isGroup ? grid : chid);
+
+            if (isGroup) {
+                const group = groups.find(x => x.id === grid);
+                const avatar = getGroupAvatar(group);
+                $(thisHotSwapSlot).find('img').replaceWith(avatar);
+            }
+
+            if (isCharacter) {
+                const avatarUrl = $(this).find('img').attr('src');
+                $(thisHotSwapSlot).find('img').attr('src', avatarUrl);
+            }
+
+            $(thisHotSwapSlot).css('cursor', 'pointer');
+            container.append(thisHotSwapSlot);
+            count++;
         }
-        RestoreNavTab();
+    });
+
+    //console.log('about to check for leftover selectors...')
+    // there are 6 slots in total,
+    if (count < maxCount) { //if any are left over
+        let leftOverSlots = maxCount - count;
+        for (let i = 1; i <= leftOverSlots; i++) {
+            container.append(template.clone());
+        }
     } else {
-        //console.log('no char list yet..');
-        setTimeout(RA_autoloadchat, 100);            // if the charcter list hadn't been loaded yet, try again. 
+        //console.log(`count was ${count} so no need to knock off any selectors!`);
     }
 }
-//only triggers when AutoLoadChat is enabled, consider adding this as an independent feature later. 
-function RestoreNavTab() {
-    if ($('#rm_button_selected_ch').children("h2").text() !== '') {        //check for a change in the character edit tab name
-        //console.log('detected ALC char finished loaded, proceeding to restore tab.');
-        $(SelectedNavTab).click();                                     //click to restore saved tab when name has changed (signalling char load is done)
-    } else {
-        setTimeout(RestoreNavTab, 100);                                //if not changed yet, check again after 100ms
-    }
-}
+
 //changes input bar and send button display depending on connection status
 function RA_checkOnlineStatus() {
     if (online_status == "no_connection") {
@@ -319,7 +365,8 @@ function RA_checkOnlineStatus() {
 //Auto-connect to API (when set to kobold, API URL exists, and auto_connect is true)
 
 function RA_autoconnect(PrevApi) {
-    if (online_status === undefined) {
+    // secrets.js or script.js not loaded
+    if (SECRET_KEYS === undefined || online_status === undefined) {
         setTimeout(RA_autoconnect, 100);
         return;
     }
@@ -328,13 +375,11 @@ function RA_autoconnect(PrevApi) {
             case 'kobold':
                 if (api_server && isUrlOrAPIKey(api_server)) {
                     $("#api_button").click();
-
                 }
                 break;
             case 'novel':
-                if (nai_settings.api_key_novel) {
+                if (secret_state[SECRET_KEYS.NOVEL]) {
                     $("#api_button_novel").click();
-
                 }
                 break;
             case 'textgenerationwebui':
@@ -343,19 +388,18 @@ function RA_autoconnect(PrevApi) {
                 }
                 break;
             case 'openai':
-                if (oai_settings.api_key_openai) {
+                if (secret_state[SECRET_KEYS.OPENAI]) {
                     $("#api_button_openai").click();
                 }
                 break;
             case 'poe':
-                if (poe_settings.token) {
+                if (secret_state[SECRET_KEYS.POE]) {
                     $("#poe_connect").click();
                 }
                 break;
         }
 
         if (!connection_made) {
-
             RA_AC_retries++;
             retry_delay = Math.min(retry_delay * 2, 30000); // double retry delay up to to 30 secs
             //console.log('connection attempts: ' + RA_AC_retries + ' delay: ' + (retry_delay / 1000) + 's');
@@ -374,27 +418,25 @@ function isUrlOrAPIKey(string) {
 }
 
 function OpenNavPanels() {
-    //auto-open R nav if locked and previously open
-    if (LoadLocalBool("NavLockOn") == true && LoadLocalBool("NavOpened") == true) {
-        console.log("RA -- clicking right nav to open");
-        $("#rightNavDrawerIcon").click();
-    } else {
-        /*         console.log('didnt see reason to open right nav on load: R-nav locked? ' +
-                    LoadLocalBool("NavLockOn")
-                    + ' R-nav was open before? ' +
-                    LoadLocalBool("NavOpened" == true)); */
-    }
 
-    //auto-open L nav if locked and previously open
+    if (deviceInfo.device.type === 'desktop') {
+        //auto-open R nav if locked and previously open
+        if (LoadLocalBool("NavLockOn") == true && LoadLocalBool("NavOpened") == true) {
+            //console.log("RA -- clicking right nav to open");
+            $("#rightNavDrawerIcon").click();
+        }
 
-    if (LoadLocalBool("LNavLockOn") == true && LoadLocalBool("LNavOpened") == true) {
-        console.log("RA -- clicking left nav to open");
-        $("#leftNavDrawerIcon").click();
-    } else {
-        /*         console.log('didnt see reason to open left nav on load: L-Nav Locked? ' +
-                    LoadLocalBool("LNavLockOn")
-                    + ' L-nav was open before? ' +
-                    LoadLocalBool("LNavOpened" == true)); */
+        //auto-open L nav if locked and previously open
+        if (LoadLocalBool("LNavLockOn") == true && LoadLocalBool("LNavOpened") == true) {
+            console.log("RA -- clicking left nav to open");
+            $("#leftNavDrawerIcon").click();
+        }
+
+        //auto-open WI if locked and previously open
+        if (LoadLocalBool("WINavLockOn") == true && LoadLocalBool("WINavOpened") == true) {
+            console.log("RA -- clicking WI to open");
+            $("#WIDrawerIcon").click();
+        }
     }
 }
 
@@ -404,10 +446,12 @@ dragElement(document.getElementById("sheld"));
 dragElement(document.getElementById("left-nav-panel"));
 dragElement(document.getElementById("right-nav-panel"));
 dragElement(document.getElementById("avatar_zoom_popup"));
+dragElement(document.getElementById("WorldInfo"));
 
 
 
 function dragElement(elmnt) {
+
     var pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
     if (document.getElementById(elmnt.id + "header")) { //ex: id="sheldheader"
         // if present, the header is where you move the DIV from, but this overrides everything else:
@@ -418,6 +462,7 @@ function dragElement(elmnt) {
     }
 
     function dragMouseDown(e) {
+        //console.log(e);
         e = e || window.event;
         e.preventDefault();
         // get the mouse cursor position at startup:
@@ -512,6 +557,7 @@ function dragElement(elmnt) {
             elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
             $(elmnt).css("bottom", "unset");
             $(elmnt).css("right", "unset");
+            $(elmnt).css("margin", "unset");
 
             /*             console.log(`
                                         offsetLeft: ${elmnt.offsetLeft}, offsetTop: ${elmnt.offsetTop}
@@ -555,7 +601,11 @@ $("document").ready(function () {
     $(AutoConnectCheckbox).prop("checked", LoadLocalBool("AutoConnectEnabled"));
     $(AutoLoadChatCheckbox).prop("checked", LoadLocalBool("AutoLoadChatEnabled"));
 
-    if (LoadLocalBool('AutoLoadChatEnabled') == true) { RA_autoloadchat(); }
+    setTimeout(function () {
+        if (LoadLocalBool('AutoLoadChatEnabled') == true) { RA_autoloadchat(); }
+    }, 200);
+
+
     //Autoconnect on page load if enabled, or when api type is changed
     if (LoadLocalBool("AutoConnectEnabled") == true) { RA_autoconnect(); }
     $("#main_api").change(function () {
@@ -568,15 +618,15 @@ $("document").ready(function () {
     $(RPanelPin).on("click", function () {
         SaveLocal("NavLockOn", $(RPanelPin).prop("checked"));
         if ($(RPanelPin).prop("checked") == true) {
-            console.log('adding pin class to right nav');
+            //console.log('adding pin class to right nav');
             $(RightNavPanel).addClass('pinnedOpen');
         } else {
-            console.log('removing pin class from right nav');
+            //console.log('removing pin class from right nav');
             $(RightNavPanel).removeClass('pinnedOpen');
 
             if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').length > 1) {
                 $(RightNavPanel).slideToggle(200, "swing");
-                $(rightNavDrawerIcon).toggleClass('openIcon closedIcon');
+                //$(rightNavDrawerIcon).toggleClass('openIcon closedIcon');
                 $(RightNavPanel).toggleClass('openDrawer closedDrawer');
             }
         }
@@ -584,16 +634,34 @@ $("document").ready(function () {
     $(LPanelPin).on("click", function () {
         SaveLocal("LNavLockOn", $(LPanelPin).prop("checked"));
         if ($(LPanelPin).prop("checked") == true) {
-            console.log('adding pin class to Left nav');
+            //console.log('adding pin class to Left nav');
             $(LeftNavPanel).addClass('pinnedOpen');
         } else {
-            console.log('removing pin class from Left nav');
+            //console.log('removing pin class from Left nav');
             $(LeftNavPanel).removeClass('pinnedOpen');
 
             if ($(LeftNavPanel).hasClass('openDrawer') && $('.openDrawer').length > 1) {
                 $(LeftNavPanel).slideToggle(200, "swing");
-                $(leftNavDrawerIcon).toggleClass('openIcon closedIcon');
+                //$(leftNavDrawerIcon).toggleClass('openIcon closedIcon');
                 $(LeftNavPanel).toggleClass('openDrawer closedDrawer');
+            }
+        }
+    });
+
+    $(WIPanelPin).on("click", function () {
+        SaveLocal("WINavLockOn", $(WIPanelPin).prop("checked"));
+        if ($(WIPanelPin).prop("checked") == true) {
+            console.log('adding pin class to WI');
+            $(WorldInfo).addClass('pinnedOpen');
+        } else {
+            console.log('removing pin class from WI');
+            $(WorldInfo).removeClass('pinnedOpen');
+
+            if ($(WorldInfo).hasClass('openDrawer') && $('.openDrawer').length > 1) {
+                console.log('closing WI after lock removal');
+                $(WorldInfo).slideToggle(200, "swing");
+                //$(WorldInfoDrawerIcon).toggleClass('openIcon closedIcon');
+                $(WorldInfo).toggleClass('openDrawer closedDrawer');
             }
         }
     });
@@ -619,6 +687,18 @@ $("document").ready(function () {
         $(LeftNavPanel).addClass('pinnedOpen');
     }
 
+    // read the state of left Nav Lock and apply to leftnav classlist
+    $(WIPanelPin).prop('checked', LoadLocalBool("WINavLockOn"));
+    if (LoadLocalBool("WINavLockOn") == true) {
+        //console.log('setting pin class via local var');
+        $(WorldInfo).addClass('pinnedOpen');
+    }
+
+    if ($(WIPanelPin).prop('checked' == true)) {
+        console.log('setting pin class via checkbox state');
+        $(WorldInfo).addClass('pinnedOpen');
+    }
+
     //save state of Right nav being open or closed
     $("#rightNavDrawerIcon").on("click", function () {
         if (!$("#rightNavDrawerIcon").hasClass('openIcon')) {
@@ -631,6 +711,13 @@ $("document").ready(function () {
         if (!$("#leftNavDrawerIcon").hasClass('openIcon')) {
             SaveLocal('LNavOpened', 'true');
         } else { SaveLocal('LNavOpened', 'false'); }
+    });
+
+    //save state of Left nav being open or closed
+    $("#WorldInfo").on("click", function () {
+        if (!$("#WorldInfo").hasClass('openIcon')) {
+            SaveLocal('WINavOpened', 'true');
+        } else { SaveLocal('WINavOpened', 'false'); }
     });
 
     var chatbarInFocus = false;
@@ -651,10 +738,7 @@ $("document").ready(function () {
     $(AutoLoadChatCheckbox).on("change", function () { SaveLocal("AutoLoadChatEnabled", $(AutoLoadChatCheckbox).prop("checked")); });
 
     $(SelectedCharacterTab).click(function () { SaveLocal('SelectedNavTab', 'rm_button_selected_ch'); });
-    $("#rm_button_characters").click(function () {            //if char list is clicked, in addition to saving it...
-        SaveLocal('SelectedNavTab', 'rm_button_characters');
-        characters.sort(Intl.Collator().compare);            // we sort the list    
-    });
+    $("#rm_button_characters").click(function () { SaveLocal('SelectedNavTab', 'rm_button_characters'); });
 
     // when a char is selected from the list, save them as the auto-load character for next page load
     $(document).on("click", ".character_select", function () {
@@ -776,7 +860,7 @@ $("document").ready(function () {
         }
 
         if (event.key == "ArrowUp") { //edits last message if chatbar is empty and focused
-            console.log('got uparrow input');
+            //console.log('got uparrow input');
             if (
                 $("#send_textarea").val() === '' &&
                 chatbarInFocus === true &&
