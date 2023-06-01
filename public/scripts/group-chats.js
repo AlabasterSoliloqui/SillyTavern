@@ -5,7 +5,7 @@ import {
     delay,
 } from './utils.js';
 import { RA_CountCharTokens, humanizedDateTime } from "./RossAscends-mods.js";
-import { sortCharactersList } from './power-user.js';
+import { sortCharactersList, sortGroupMembers } from './power-user.js';
 
 import {
     chat,
@@ -45,6 +45,14 @@ import {
     setMenuType,
     menu_type,
     select_selected_character,
+    cancelTtsPlay,
+    isMultigenEnabled,
+    displayPastChats,
+    sendMessageAsUser,
+    getBiasStrings,
+    saveChatConditional,
+    deactivateSendButtons,
+    activateSendButtons,
 } from "../script.js";
 import { appendTagToList, createTagMapFromList, getTagsList, applyTagsOnCharacterSelect } from './tags.js';
 
@@ -142,7 +150,7 @@ export async function getGroupChat(groupId) {
         }
         printMessages();
     } else {
-        sendSystemMessage(system_message_types.GROUP);
+        sendSystemMessage(system_message_types.GROUP, '', { isSmallSys: true });
         if (group && Array.isArray(group.members)) {
             for (let member of group.members) {
                 const character = characters.find(x => x.avatar === member || x.name === member);
@@ -191,6 +199,7 @@ function resetSelectedGroup() {
 async function saveGroupChat(groupId, shouldSaveGroup) {
     const group = groups.find(x => x.id == groupId);
     const chat_id = group.chat_id;
+    group['date_last_chat'] = Date.now();
     const response = await fetch("/savegroupchat", {
         method: "POST",
         headers: getRequestHeaders(),
@@ -200,6 +209,7 @@ async function saveGroupChat(groupId, shouldSaveGroup) {
     if (shouldSaveGroup && response.ok) {
         await editGroup(groupId);
     }
+    sortCharactersList();
 }
 
 export async function renameGroupMember(oldAvatar, newAvatar, newName) {
@@ -277,6 +287,9 @@ async function getGroups() {
 
         // Convert groups to new format
         for (const group of groups) {
+            if (group.disabled_members == undefined) {
+                group.disabled_members = [];
+            }
             if (group.chat_id == undefined) {
                 group.chat_id = group.id;
                 group.chats = [group.id];
@@ -287,6 +300,12 @@ async function getGroups() {
             }
             if (group.past_metadata == undefined) {
                 group.past_metadata = {};
+            }
+            if (typeof group.chat_id === 'number') {
+                group.chat_id = String(group.chat_id);
+            }
+            if (Array.isArray(group.chats) && group.chats.some(x => typeof x === 'number')) {
+                group.chats = group.chats.map(x => String(x));
             }
         }
     }
@@ -337,34 +356,15 @@ function getGroupAvatar(group) {
         }
     }
 
-    // Cohee: there's probably a smarter way to do this..
-    if (memberAvatars.length === 1) {
-        const groupAvatar = $("#group_avatars_template .collage_1").clone();
-        groupAvatar.find(".img_1").attr("src", memberAvatars[0]);
-        return groupAvatar;
-    }
+    const avatarCount = memberAvatars.length;
 
-    if (memberAvatars.length === 2) {
-        const groupAvatar = $("#group_avatars_template .collage_2").clone();
-        groupAvatar.find(".img_1").attr("src", memberAvatars[0]);
-        groupAvatar.find(".img_2").attr("src", memberAvatars[1]);
-        return groupAvatar;
-    }
+    if (avatarCount >= 1 && avatarCount <= 4) {
+        const groupAvatar = $(`#group_avatars_template .collage_${avatarCount}`).clone();
 
-    if (memberAvatars.length === 3) {
-        const groupAvatar = $("#group_avatars_template .collage_3").clone();
-        groupAvatar.find(".img_1").attr("src", memberAvatars[0]);
-        groupAvatar.find(".img_2").attr("src", memberAvatars[1]);
-        groupAvatar.find(".img_3").attr("src", memberAvatars[2]);
-        return groupAvatar;
-    }
+        for (let i = 0; i < avatarCount; i++) {
+            groupAvatar.find(`.img_${i + 1}`).attr("src", memberAvatars[i]);
+        }
 
-    if (memberAvatars.length === 4) {
-        const groupAvatar = $("#group_avatars_template .collage_4").clone();
-        groupAvatar.find(".img_1").attr("src", memberAvatars[0]);
-        groupAvatar.find(".img_2").attr("src", memberAvatars[1]);
-        groupAvatar.find(".img_3").attr("src", memberAvatars[2]);
-        groupAvatar.find(".img_4").attr("src", memberAvatars[3]);
         return groupAvatar;
     }
 
@@ -375,7 +375,7 @@ function getGroupAvatar(group) {
 }
 
 
-async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null, params = {}) {
+async function generateGroupWrapper(by_auto_mode, type = null, params = {}) {
     if (online_status === "no_connection") {
         is_group_generating = false;
         setSendButtonState(false);
@@ -393,9 +393,10 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
     }
 
     const group = groups.find((x) => x.id === selected_group);
+    let typingIndicator = $("#chat .typing_indicator");
 
     if (!group || !Array.isArray(group.members) || !group.members.length) {
-        sendSystemMessage(system_message_types.EMPTY);
+        sendSystemMessage(system_message_types.EMPTY, '', { isSmallSys: true });
         return;
     }
 
@@ -405,8 +406,6 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
         setCharacterName('');
         setCharacterId(undefined);
         const userInput = $("#send_textarea").val();
-
-        let typingIndicator = $("#chat .typing_indicator");
 
         if (typingIndicator.length === 0 && !isStreamingEnabled()) {
             typingIndicator = $(
@@ -420,12 +419,13 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
         group_generation_id = Date.now();
         const lastMessage = chat[chat.length - 1];
         let messagesBefore = chat.length;
-        let lastMessageText = lastMessage.mes;
+        let lastMessageText = lastMessage?.mes || '';
         let activationText = "";
         let isUserInput = false;
-        let isQuietGenDone = false;
+        let isGenerationDone = false;
+        let isGenerationAborted = false;
 
-        if (userInput && userInput.length && !by_auto_mode) {
+        if (userInput?.length && !by_auto_mode) {
             isUserInput = true;
             activationText = userInput;
             messagesBefore++;
@@ -435,34 +435,51 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
             }
         }
 
+        const resolveOriginal = params.resolve;
+        const rejectOriginal = params.reject;
+
+        if (params.signal instanceof AbortSignal) {
+            if (params.signal.aborted) {
+                throw new Error('Already aborted signal passed. Group generation stopped');
+            }
+
+            params.signal.onabort = () => {
+                isGenerationAborted = true;
+            };
+        }
+
+        if (typeof params.resolve === 'function') {
+            params.resolve = function () {
+                isGenerationDone = true;
+                resolveOriginal.apply(this, arguments);
+            };
+        }
+
+        if (typeof params.reject === 'function') {
+            params.reject = function () {
+                isGenerationDone = true;
+                rejectOriginal.apply(this, arguments);
+            }
+        }
+
         const activationStrategy = Number(group.activation_strategy ?? group_activation_strategy.NATURAL);
+        const enabledMembers = group.members.filter(x => !group.disabled_members.includes(x));
         let activatedMembers = [];
 
-        if (typeof force_chid == 'number') {
-            activatedMembers = [force_chid];
+        if (params && typeof params.force_chid == 'number') {
+            activatedMembers = [params.force_chid];
         } else if (type === "quiet") {
             activatedMembers = activateSwipe(group.members);
 
             if (activatedMembers.length === 0) {
                 activatedMembers = activateListOrder(group.members.slice(0, 1));
             }
-
-            const resolveOriginal = params.resolve;
-            const rejectOriginal = params.reject;
-            params.resolve = function() {
-                isQuietGenDone = true;
-                resolveOriginal.apply(this, arguments);
-            };
-            params.reject = function() {
-                isQuietGenDone = true;
-                rejectOriginal.apply(this, arguments);
-            }
         }
         else if (type === "swipe") {
             activatedMembers = activateSwipe(group.members);
 
             if (activatedMembers.length === 0) {
-                callPopup('<h3>Deleted group member swiped. To get a reply, add them back to the group.</h3>', 'text');
+                toastr.warning('Deleted group member swiped. To get a reply, add them back to the group.');
                 throw new Error('Deleted group member swiped');
             }
         }
@@ -471,34 +488,52 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
             activatedMembers = activateImpersonate(group.members);
         }
         else if (activationStrategy === group_activation_strategy.NATURAL) {
-            activatedMembers = activateNaturalOrder(group.members, activationText, lastMessage, group.allow_self_responses, isUserInput);
+            activatedMembers = activateNaturalOrder(enabledMembers, activationText, lastMessage, group.allow_self_responses, isUserInput);
         }
         else if (activationStrategy === group_activation_strategy.LIST) {
-            activatedMembers = activateListOrder(group.members);
+            activatedMembers = activateListOrder(enabledMembers);
         }
 
-        // now the real generation begins: cycle through every character
+        if (activatedMembers.length === 0) {
+            toastr.warning('All group members are disabled. Enable at least one to get a reply.');
+
+            // Send user message as is
+            const bias = getBiasStrings(userInput);
+            await sendMessageAsUser(userInput, bias.messageBias);
+            await saveChatConditional();
+            $('#send_textarea').val('');
+        }
+
+        // now the real generation begins: cycle through every activated character
         for (const chId of activatedMembers) {
+            deactivateSendButtons();
+            isGenerationDone = false;
             const generateType = type == "swipe" || type == "impersonate" || type == "quiet" ? type : "group_chat";
             setCharacterId(chId);
             setCharacterName(characters[chId].name)
 
-            await Generate(generateType, { automatic_trigger: by_auto_mode, ...(params || {}) });
+            Generate(generateType, { automatic_trigger: by_auto_mode, ...(params || {}) });
 
-            if (type !== "swipe" && type !== "impersonate") {
+            if (type !== "swipe" && type !== "impersonate" && !isMultigenEnabled() && !isStreamingEnabled()) {
                 // update indicator and scroll down
                 typingIndicator
                     .find(".typing_indicator_name")
                     .text(characters[chId].name);
                 $("#chat").append(typingIndicator);
-                typingIndicator.show(250, function () {
+                typingIndicator.show(200, function () {
                     typingIndicator.get(0).scrollIntoView({ behavior: "smooth" });
                 });
             }
 
+            // TODO: This is awful. Refactor this
             while (true) {
+                deactivateSendButtons();
+                if (isGenerationAborted) {
+                    throw new Error('Group generation aborted');
+                }
+
                 // if not swipe - check if message generated already
-                if (type !== "swipe" && chat.length == messagesBefore) {
+                if (type !== "swipe" && !isMultigenEnabled() && chat.length == messagesBefore) {
                     await delay(100);
                 }
                 // if swipe - see if message changed
@@ -509,6 +544,13 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
                         }
                         else {
                             break;
+                        }
+                    }
+                    else if (isMultigenEnabled()) {
+                        if (isGenerationDone) {
+                            break;
+                        } else {
+                            await delay(100);
                         }
                     }
                     else {
@@ -529,6 +571,13 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
                             break;
                         }
                     }
+                    else if (isMultigenEnabled()) {
+                        if (isGenerationDone) {
+                            break;
+                        } else {
+                            await delay(100);
+                        }
+                    }
                     else {
                         if (!$("#send_textarea").val() || $("#send_textarea").val() == userInput) {
                             await delay(100);
@@ -539,7 +588,15 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
                     }
                 }
                 else if (type === 'quiet') {
-                    if (isQuietGenDone) {
+                    if (isGenerationDone) {
+                        break;
+                    } else {
+                        await delay(100);
+                    }
+                }
+                else if (isMultigenEnabled()) {
+                    if (isGenerationDone) {
+                        messagesBefore++;
                         break;
                     } else {
                         await delay(100);
@@ -550,17 +607,18 @@ async function generateGroupWrapper(by_auto_mode, type = null, force_chid = null
                     break;
                 }
             }
-
-            // hide and reapply the indicator to the bottom of the list
-            typingIndicator.hide(250);
-            $("#chat").append(typingIndicator);
         }
     } finally {
+        // hide and reapply the indicator to the bottom of the list
+        typingIndicator.hide(200);
+        $("#chat").append(typingIndicator);
+
         is_group_generating = false;
         $("#send_textarea").attr("disabled", false);
         setSendButtonState(false);
         setCharacterId(undefined);
         setCharacterName('');
+        activateSendButtons();
         showSwipeButtons();
     }
 }
@@ -668,7 +726,8 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     }
 
     // pick 1 at random if no one was activated
-    while (activatedMembers.length === 0) {
+    let retries = 0;
+    while (activatedMembers.length === 0 && ++retries <= members.length) {
         const randomIndex = Math.floor(Math.random() * members.length);
         const character = characters.find((x) => x.avatar === members[randomIndex]);
 
@@ -720,7 +779,7 @@ async function deleteGroup(id) {
 
         $("#rm_info_avatar").html("");
         $("#rm_info_block").transition({ opacity: 0, duration: 0 });
-        select_rm_info("Group deleted!");
+        select_rm_info("group_delete", id);
         $("#rm_info_block").transition({ opacity: 1.0, duration: 2000 });
 
         $("#rm_button_selected_ch").children("h2").text('');
@@ -892,13 +951,14 @@ function select_group_chats(groupId, skipAnimation) {
             group.members.includes(character.avatar)
         ) {
             template.css({ 'order': group.members.indexOf(character.avatar) });
+            template.toggleClass('disabled', group.disabled_members.includes(character.avatar));
             $("#rm_group_members").append(template);
         } else {
             $("#rm_group_add_members").append(template);
         }
     }
 
-    sortCharactersList("#rm_group_add_members .group_member");
+    sortGroupMembers("#rm_group_add_members .group_member");
     filterMembersByFavorites(false);
 
     const groupHasMembers = !!$("#rm_group_members").children().length;
@@ -909,15 +969,20 @@ function select_group_chats(groupId, skipAnimation) {
     if (groupId) {
         $("#rm_group_submit").hide();
         $("#rm_group_delete").show();
+        $("#rm_group_scenario").show();
     } else {
         $("#rm_group_submit").show();
+        if ($("#groupAddMemberListToggle .inline-drawer-content").css('display') !== 'block') {
+            $("#groupAddMemberListToggle").trigger('click');
+        }
         $("#rm_group_delete").hide();
+        $("#rm_group_scenario").hide();
     }
 
     $("#rm_group_delete").off();
     $("#rm_group_delete").on("click", function () {
         if (is_group_generating) {
-            callPopup('<h3>Not so fast! Wait for the characters to stop typing before deleting the group.</h3>', 'text');
+            toastr.warning('Not so fast! Wait for the characters to stop typing before deleting the group.');
             return;
         }
 
@@ -971,6 +1036,23 @@ function select_group_chats(groupId, skipAnimation) {
             await modifyGroupMember(groupId, member, false);
         }
 
+        if (action === 'enable') {
+            member.removeClass('disabled');
+            const _thisGroup = groups.find(x => x.id === groupId);
+            const index = _thisGroup.disabled_members.indexOf(member.data('id'));
+            if (index !== -1) {
+                _thisGroup.disabled_members.splice(index, 1);
+            }
+            await editGroup(groupId);
+        }
+
+        if (action === 'disable') {
+            member.addClass('disabled');
+            const _thisGroup = groups.find(x => x.id === groupId);
+            _thisGroup.disabled_members.push(member.data('id'));
+            await editGroup(groupId);
+        }
+
         if (action === 'up' || action === 'down') {
             await reorderGroupMember(groupId, member, action);
         }
@@ -982,11 +1064,11 @@ function select_group_chats(groupId, skipAnimation) {
         if (action === 'speak') {
             const chid = Number(member.attr('chid'));
             if (Number.isInteger(chid)) {
-                generateGroupWrapper(false, null, chid);
+                Generate('normal', { force_chid: chid });
             }
         }
 
-        sortCharactersList("#rm_group_add_members .group_member");
+        sortGroupMembers("#rm_group_add_members .group_member");
     });
 }
 
@@ -1002,6 +1084,7 @@ async function selectGroup() {
 
     if (!is_send_press && !is_group_generating) {
         if (selected_group !== groupId) {
+            cancelTtsPlay();
             selected_group = groupId;
             setCharacterId(undefined);
             setCharacterName('');
@@ -1010,9 +1093,6 @@ async function selectGroup() {
             updateChatMetadata({}, true);
             chat.length = 0;
             await getGroupChat(groupId);
-            //to avoid the filter being lit up yellow and left at true while the list of character and group reseted.
-            $("#filter_by_fav").removeClass("fav_on");
-            filterByFav = false;
         }
 
         select_group_chats(groupId);
@@ -1063,7 +1143,7 @@ async function createGroup() {
     const memberNames = characters.filter(x => members.includes(x.avatar)).map(x => x.name).join(", ");
 
     if (!name) {
-        name = `Chat with ${memberNames}`;
+        name = `Group: ${memberNames}`;
     }
 
     // placeholder
@@ -1081,6 +1161,7 @@ async function createGroup() {
             avatar_url: avatar_url,
             allow_self_responses: allow_self_responses,
             activation_strategy: activation_strategy,
+            disabled_members: [],
             chat_metadata: {},
             fav: fav_grp_checked,
             chat_id: chatName,
@@ -1091,15 +1172,8 @@ async function createGroup() {
     if (createGroupResponse.ok) {
         const data = await createGroupResponse.json();
         createTagMapFromList("#groupTagList", data.id);
-
         await getCharacters();
-        $("#rm_info_avatar").html("");
-        const avatar = $("#avatar_div_div").clone();
-        avatar.find("img").attr("src", avatar_url);
-        $("#rm_info_avatar").append(avatar);
-        $("#rm_info_block").transition({ opacity: 0, duration: 0 });
-        select_rm_info("Group chat created");
-        $("#rm_info_block").transition({ opacity: 1.0, duration: 2000 });
+        select_rm_info('group_create', data.id);
     }
 }
 
@@ -1164,9 +1238,11 @@ export async function getGroupPastChats(groupId) {
             let this_chat_file_size = (JSON.stringify(messages).length / 1024).toFixed(2) + "kb";
             let chat_items = messages.length;
             const lastMessage = messages.length ? messages[messages.length - 1].mes : '[The chat is empty]';
+            const lastMessageDate = messages.length ? (messages[messages.length - 1].send_date || Date.now()) : Date.now();
             chats.push({
                 'file_name': chatId,
                 'mes': lastMessage,
+                'last_mes': lastMessageDate,
                 'file_size': this_chat_file_size,
                 'chat_items': chat_items,
             });
@@ -1192,10 +1268,12 @@ export async function openGroupChat(groupId, chatId) {
     group.past_metadata[previousChat] = Object.assign({}, chat_metadata);
     group.chat_id = chatId;
     group.chat_metadata = group.past_metadata[chatId] || {};
+    group['date_last_chat'] = Date.now();
     updateChatMetadata(group.chat_metadata, true);
 
     await editGroup(groupId, true);
     await getGroupChat(groupId);
+    sortCharactersList();
 }
 
 export async function renameGroupChat(groupId, oldChatId, newChatId) {
@@ -1245,6 +1323,34 @@ export async function deleteGroupChat(groupId, chatId) {
     }
 }
 
+export async function importGroupChat(formData) {
+    await jQuery.ajax({
+        type: "POST",
+        url: "/importgroupchat",
+        data: formData,
+        beforeSend: function () {
+        },
+        cache: false,
+        contentType: false,
+        processData: false,
+        success: async function (data) {
+            if (data.res) {
+                const chatId = data.res;
+                const group = groups.find(x => x.id == selected_group);
+
+                if (group) {
+                    group.chats.push(chatId);
+                    await editGroup(selected_group, true, true);
+                    await displayPastChats();
+                }
+            }
+        },
+        error: function () {
+            $("#create_button").removeAttr("disabled");
+        },
+    });
+}
+
 export async function saveGroupBookmarkChat(groupId, name, metadata) {
     const group = groups.find(x => x.id === groupId);
 
@@ -1264,11 +1370,35 @@ export async function saveGroupBookmarkChat(groupId, name, metadata) {
     });
 }
 
+function setGroupScenario() {
+    if (!selected_group) {
+        return;
+    }
+
+    const template = $('#group_scenario_template .group_scenario').clone();
+    const metadataValue = chat_metadata['scenario'] || '';
+    template.find('.group_chat_scenario').text(metadataValue);
+    callPopup(template.get(0).outerHTML, 'text');
+}
+
+function onGroupScenarioInput() {
+    const value = $(this).val();
+    const metadata = { scenario: value, };
+    updateChatMetadata(metadata, false);
+}
+
+function onGroupScenarioRemoveClick() {
+    $(this).closest('.group_scenario').find('.group_chat_scenario').val('').trigger('input');
+}
+
 jQuery(() => {
     $(document).on("click", ".group_select", selectGroup);
+    $(document).on("input", ".group_chat_scenario", onGroupScenarioInput);
+    $(document).on("click", ".remove_scenario_override", onGroupScenarioRemoveClick);
     $("#rm_group_filter").on("input", filterGroupMembers);
     $("#group_fav_filter").on("click", toggleFilterByFavorites);
     $("#rm_group_submit").on("click", createGroup);
+    $("#rm_group_scenario").on("click", setGroupScenario);
     $("#rm_group_automode").on("input", function () {
         const value = $(this).prop("checked");
         is_group_automode_enabled = value;
