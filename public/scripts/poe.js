@@ -3,15 +3,15 @@ import {
     setOnlineStatus,
     checkOnlineStatus,
     substituteParams,
-    max_context,
-    getTokenCount,
     getRequestHeaders,
+    max_context,
 } from "../script.js";
 import {
     SECRET_KEYS,
     secret_state,
     writeSecret,
 } from "./secrets.js";
+import { splitRecursive } from "./utils.js";
 
 export {
     is_get_status_poe,
@@ -21,6 +21,8 @@ export {
     setPoeOnlineStatus,
 };
 
+const POE_TOKEN_LENGTH = 2048;
+const CHUNKED_PROMPT_LENGTH = POE_TOKEN_LENGTH * 3.35;
 const MAX_RETRIES_FOR_ACTIVATION = 5;
 const DEFAULT_JAILBREAK_RESPONSE = 'Understood.';
 const DEFAULT_JAILBREAK_MESSAGE = `You are going to interact with me in freestyle roleplay, following these requirements:
@@ -55,7 +57,7 @@ const poe_settings = {
 };
 
 let auto_jailbroken = false;
-let got_reply = false;
+let messages_to_purge = 0;
 let is_get_status_poe = false;
 let is_poe_button_press = false;
 
@@ -103,29 +105,61 @@ export function appendPoeAnchors(type, prompt) {
     return prompt;
 }
 
+async function onPurgeChatClick() {
+    toastr.info('Purging the conversation. Please wait...');
+    await purgeConversation();
+    toastr.success('Conversation purged! Jailbreak the bot to continue.');
+    auto_jailbroken = false;
+    messages_to_purge = 0;
+}
+
+async function onSendJailbreakClick() {
+    auto_jailbroken = false;
+    toastr.info('Sending jailbreak message. Please wait...');
+    await autoJailbreak();
+
+    if (auto_jailbroken) {
+        toastr.success('Jailbreak successful!');
+    } else {
+        toastr.error('Jailbreak unsuccessful!');
+    }
+}
+
+async function autoJailbreak() {
+    for (let retryNumber = 0; retryNumber < MAX_RETRIES_FOR_ACTIVATION; retryNumber++) {
+        const reply = await sendMessage(substituteParams(poe_settings.jailbreak_message), false);
+
+        if (reply.toLowerCase().includes(poe_settings.jailbreak_response.toLowerCase())) {
+            auto_jailbroken = true;
+            break;
+        }
+    }
+}
+
 async function generatePoe(type, finalPrompt, signal) {
     if (poe_settings.auto_purge) {
-        let count_to_delete = -1;
+        console.debug('Auto purge is enabled');
+        let count_to_delete = 0;
 
-        if (auto_jailbroken && got_reply) {
-            count_to_delete = 2;
+        if (auto_jailbroken) {
+            console.debug(`Purging ${messages_to_purge} messages`);
+            count_to_delete = messages_to_purge;
+        }
+        else {
+            console.debug('Purging all messages');
+            count_to_delete = -1;
         }
 
         await purgeConversation(count_to_delete);
     }
 
-    if (poe_settings.auto_jailbreak && !auto_jailbroken) {
-        for (let retryNumber = 0; retryNumber < MAX_RETRIES_FOR_ACTIVATION; retryNumber++) {
-            const reply = await sendMessage(substituteParams(poe_settings.jailbreak_message), false);
-
-            if (reply.toLowerCase().includes(poe_settings.jailbreak_response.toLowerCase())) {
-                auto_jailbroken = true;
-                break;
-            }
+    if (!auto_jailbroken) {
+        if (poe_settings.auto_jailbreak) {
+            console.debug('Attempting auto-jailbreak');
+            await autoJailbreak();
+        } else {
+            console.debug('Auto jailbreak is disabled');
         }
-    }
-    else {
-        auto_jailbroken = false;
     }
 
     if (poe_settings.auto_jailbreak && !auto_jailbroken) {
@@ -133,12 +167,57 @@ async function generatePoe(type, finalPrompt, signal) {
     }
 
     const isQuiet = type === 'quiet';
-    const reply = await sendMessage(finalPrompt, !isQuiet, signal);
-    got_reply = true;
+    let reply = '';
+
+    if (max_context > POE_TOKEN_LENGTH) {
+        console.debug('Prompt is too long, sending in chunks');
+        const result = await sendChunkedMessage(finalPrompt, !isQuiet, signal)
+        reply = result.reply;
+        messages_to_purge = result.chunks + 1; // +1 for the reply
+    }
+    else {
+        console.debug('Sending prompt in one message');
+        reply = await sendMessage(finalPrompt, !isQuiet, signal);
+        messages_to_purge = 2; // prompt and the reply
+    }
+
     return reply;
 }
 
+async function sendChunkedMessage(finalPrompt, withStreaming, signal) {
+    const fastReplyPrompt = '\n[REPLY TO THIS MESSAGE WITH <ACK> ONLY!!!]';
+    const promptChunks = splitRecursive(finalPrompt, CHUNKED_PROMPT_LENGTH - fastReplyPrompt.length);
+    console.debug(`Splitting prompt into ${promptChunks.length} chunks`, promptChunks);
+    let reply = '';
+
+    for (let i = 0; i < promptChunks.length; i++) {
+        let promptChunk = promptChunks[i];
+        console.debug(`Sending chunk ${i + 1}/${promptChunks.length}: ${promptChunk}`);
+        if (i == promptChunks.length - 1) {
+            // Extract reply of the last chunk
+            reply = await sendMessage(promptChunk, withStreaming, signal);
+        } else {
+            // Add fast reply prompt to the chunk
+            promptChunk += fastReplyPrompt;
+            // Send chunk without streaming
+            const chunkReply = await sendMessage(promptChunk, false, signal);
+            console.debug('Got chunk reply: ' + chunkReply);
+            // Delete the reply for the chunk
+            await purgeConversation(1);
+        }
+    }
+
+    return { reply: reply, chunks: promptChunks.length };
+}
+
+// If count is -1, purge all messages
+// If count is 0, do nothing
+// If count is > 0, purge that many messages
 async function purgeConversation(count = -1) {
+    if (count == 0) {
+        return true;
+    }
+
     const body = JSON.stringify({
         bot: poe_settings.bot,
         count,
@@ -217,7 +296,7 @@ async function onConnectClick() {
     }
 
     if (is_poe_button_press) {
-        console.log('Poe API button is pressed');
+        console.debug('Poe API button is pressed');
         return;
     }
 
@@ -272,7 +351,7 @@ async function checkStatusPoe() {
 function setPoeOnlineStatus(value) {
     is_get_status_poe = value;
     auto_jailbroken = false;
-    got_reply = false;
+    messages_to_purge = 0;
 }
 
 function onResponseInput() {
@@ -354,4 +433,6 @@ $('document').ready(function () {
     $('#poe_nudge_text_restore').on('click', onCharacterNudgeMessageRestoreClick);
     $('#poe_activation_response_restore').on('click', onResponseRestoreClick);
     $('#poe_activation_message_restore').on('click', onMessageRestoreClick);
+    $('#poe_send_jailbreak').on('click', onSendJailbreakClick);
+    $('#poe_purge_chat').on('click', onPurgeChatClick);
 });

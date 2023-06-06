@@ -1,9 +1,7 @@
 {
-    "display_name": "Memory",
-    "loading_order": 9,
-    "requires": [
-        "summarize"
-    ],
+    "display_name": "Speech Recognition",
+    "loading_order": 13,
+    "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",

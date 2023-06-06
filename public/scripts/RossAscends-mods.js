@@ -21,13 +21,14 @@ import {
     send_on_enter_options,
 } from "./power-user.js";
 
-import { LoadLocal, SaveLocal, ClearLocal, CheckLocal, LoadLocalBool } from "./f-localStorage.js";
+import { LoadLocal, SaveLocal, CheckLocal, LoadLocalBool } from "./f-localStorage.js";
 import { selected_group, is_group_generating, getGroupAvatar, groups } from "./group-chats.js";
 import {
     SECRET_KEYS,
     secret_state,
 } from "./secrets.js";
 import { sortByCssOrder } from "./utils.js";
+import { chat_completion_sources, oai_settings } from "./openai.js";
 
 var NavToggle = document.getElementById("nav-toggle");
 
@@ -79,7 +80,7 @@ observer.observe(document.documentElement, observerConfig);
 /**
  * Wait for an element before resolving a promise
  * @param {String} querySelector - Selector of element to wait for
- * @param {Integer} timeout - Milliseconds to wait before timing out, or 0 for no timeout              
+ * @param {Integer} timeout - Milliseconds to wait before timing out, or 0 for no timeout
  */
 function waitForElement(querySelector, timeout) {
     return new Promise((resolve, reject) => {
@@ -259,16 +260,16 @@ export function RA_CountCharTokens() {
                 (power_user.pin_examples ? characters[this_chid].mes_example : ''),
             ].join('\n').replace(/\r/gm, '').trim();
             perm_tokens = getTokenCount(perm_string);
-        } else { console.log("RA_TC -- no valid char found, closing."); }                // if neither, probably safety char or some error in loading
+        } else { console.debug("RA_TC -- no valid char found, closing."); }                // if neither, probably safety char or some error in loading
     }
     // display the counted tokens
     if (count_tokens < 1024 && perm_tokens < 1024) {
-        $("#result_info").html(count_tokens + " Tokens (" + perm_tokens + " Permanent Tokens)");      //display normal if both counts are under 1024
+        $("#result_info").html(count_tokens + " Tokens (" + perm_tokens + " Permanent)");      //display normal if both counts are under 1024
     } else {
         $("#result_info").html(`
         <span class="neutral_warning">${count_tokens}</span>&nbsp;Tokens (<span class="neutral_warning">${perm_tokens}</span><span>&nbsp;Permanent Tokens)
         <br>
-        <div id="chartokenwarning" class="menu_button whitespacenowrap"><a href="/notes#charactertokens" target="_blank">Learn More About Token 'Limits'</a></div>`);
+        <div id="chartokenwarning" class="menu_button whitespacenowrap"><a href="https://docs.sillytavern.app/usage/guidebook/#character-tokens" target="_blank">Learn More About Token 'Limits'</a></div>`);
     } //warn if either are over 1024
 }
 //Auto Load Last Charcter -- (fires when active_character is defined and auto_load_chat is true)
@@ -283,7 +284,7 @@ async function RA_autoloadchat() {
             $(groupToAutoLoad).click();
         }
 
-        // if the charcter list hadn't been loaded yet, try again. 
+        // if the charcter list hadn't been loaded yet, try again.
     } else { setTimeout(RA_autoloadchat, 100); }
 }
 
@@ -388,7 +389,7 @@ function RA_autoconnect(PrevApi) {
                 }
                 break;
             case 'openai':
-                if (secret_state[SECRET_KEYS.OPENAI]) {
+                if (secret_state[SECRET_KEYS.OPENAI] || secret_state[SECRET_KEYS.CLAUDE] || oai_settings.chat_completion_source == chat_completion_sources.WINDOWAI) {
                     $("#api_button_openai").click();
                 }
                 break;
@@ -428,13 +429,13 @@ function OpenNavPanels() {
 
         //auto-open L nav if locked and previously open
         if (LoadLocalBool("LNavLockOn") == true && LoadLocalBool("LNavOpened") == true) {
-            console.log("RA -- clicking left nav to open");
+            console.debug("RA -- clicking left nav to open");
             $("#leftNavDrawerIcon").click();
         }
 
         //auto-open WI if locked and previously open
         if (LoadLocalBool("WINavLockOn") == true && LoadLocalBool("WINavOpened") == true) {
-            console.log("RA -- clicking WI to open");
+            console.debug("RA -- clicking WI to open");
             $("#WIDrawerIcon").click();
         }
     }
@@ -450,7 +451,7 @@ dragElement(document.getElementById("WorldInfo"));
 
 
 
-function dragElement(elmnt) {
+export function dragElement(elmnt) {
 
     var pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
     if (document.getElementById(elmnt.id + "header")) { //ex: id="sheldheader"
@@ -504,7 +505,7 @@ function dragElement(elmnt) {
         pos3 = e.clientX;   //new mouse X
         pos4 = e.clientY;   //new mouse Y
 
-
+        elmnt.setAttribute('data-dragged', 'true');
 
         //fix over/underflows:
 
@@ -563,10 +564,10 @@ function dragElement(elmnt) {
                                         offsetLeft: ${elmnt.offsetLeft}, offsetTop: ${elmnt.offsetTop}
                                         winWidth: ${winWidth}, winHeight: ${winHeight}
                                         sheldWidth: ${sheldWidth}
-                                        X: ${elmnt.style.left} 
-                                        Y: ${elmnt.style.top} 
-                                        MaxX: ${maxX}, MaxY: ${maxY} 
-                                        Topbar 1st X: ${((winWidth - sheldWidth) / 2)} 
+                                        X: ${elmnt.style.left}
+                                        Y: ${elmnt.style.top}
+                                        MaxX: ${maxX}, MaxY: ${maxY}
+                                        Topbar 1st X: ${((winWidth - sheldWidth) / 2)}
                                         TopBar lastX: ${((winWidth - sheldWidth) / 2) + sheldWidth}
                                             `); */
 
@@ -651,14 +652,14 @@ $("document").ready(function () {
     $(WIPanelPin).on("click", function () {
         SaveLocal("WINavLockOn", $(WIPanelPin).prop("checked"));
         if ($(WIPanelPin).prop("checked") == true) {
-            console.log('adding pin class to WI');
+            console.debug('adding pin class to WI');
             $(WorldInfo).addClass('pinnedOpen');
         } else {
-            console.log('removing pin class from WI');
+            console.debug('removing pin class from WI');
             $(WorldInfo).removeClass('pinnedOpen');
 
             if ($(WorldInfo).hasClass('openDrawer') && $('.openDrawer').length > 1) {
-                console.log('closing WI after lock removal');
+                console.debug('closing WI after lock removal');
                 $(WorldInfo).slideToggle(200, "swing");
                 //$(WorldInfoDrawerIcon).toggleClass('openIcon closedIcon');
                 $(WorldInfo).toggleClass('openDrawer closedDrawer');
@@ -673,7 +674,7 @@ $("document").ready(function () {
         $(RightNavPanel).addClass('pinnedOpen');
     }
     if ($(RPanelPin).prop('checked' == true)) {
-        console.log('setting pin class via checkbox state');
+        console.debug('setting pin class via checkbox state');
         $(RightNavPanel).addClass('pinnedOpen');
     }
     // read the state of left Nav Lock and apply to leftnav classlist
@@ -683,7 +684,7 @@ $("document").ready(function () {
         $(LeftNavPanel).addClass('pinnedOpen');
     }
     if ($(LPanelPin).prop('checked' == true)) {
-        console.log('setting pin class via checkbox state');
+        console.debug('setting pin class via checkbox state');
         $(LeftNavPanel).addClass('pinnedOpen');
     }
 
@@ -695,7 +696,7 @@ $("document").ready(function () {
     }
 
     if ($(WIPanelPin).prop('checked' == true)) {
-        console.log('setting pin class via checkbox state');
+        console.debug('setting pin class via checkbox state');
         $(WorldInfo).addClass('pinnedOpen');
     }
 
@@ -751,7 +752,7 @@ $("document").ready(function () {
         SaveLocal('ActiveGroup', $(this).data('id'));
     });
 
-    //this makes the chat input text area resize vertically to match the text size (limited by CSS at 50% window height)    
+    //this makes the chat input text area resize vertically to match the text size (limited by CSS at 50% window height)
     $('#send_textarea').on('input', function () {
         this.style.height = '40px';
         this.style.height = (this.scrollHeight) + 'px';
@@ -842,7 +843,7 @@ $("document").ready(function () {
         }
 
         if (event.ctrlKey && event.key == "ArrowUp") { //edits last USER message if chatbar is empty and focused
-            console.log('got ctrl+uparrow input');
+            console.debug('got ctrl+uparrow input');
             if (
                 $("#send_textarea").val() === '' &&
                 chatbarInFocus === true &&

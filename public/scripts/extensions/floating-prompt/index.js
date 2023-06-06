@@ -1,10 +1,7 @@
 import { chat_metadata, saveSettingsDebounced } from "../../../script.js";
-import { extension_settings, getContext } from "../../extensions.js";
+import { ModuleWorkerWrapper, extension_settings, getContext, saveMetadataDebounced } from "../../extensions.js";
 import { registerSlashCommand } from "../../slash-commands.js";
-import { debounce } from "../../utils.js";
 export { MODULE_NAME };
-
-const saveMetadataDebounced = debounce(async () => await getContext().saveMetadata(), 1000);
 
 const MODULE_NAME = '2_floating_prompt'; // <= Deliberate, for sorting lower than memory
 const UPDATE_INTERVAL = 1000;
@@ -110,24 +107,6 @@ function loadSettings() {
     $('#extension_floating_default').val(extension_settings.note.default);
 }
 
-let isWorkerBusy = false;
-
-async function moduleWorkerWrapper() {
-    // Don't touch me I'm busy...
-    if (isWorkerBusy) {
-        return;
-    }
-
-    // I'm free. Let's update!
-    try {
-        isWorkerBusy = true;
-        await moduleWorker();
-    }
-    finally {
-        isWorkerBusy = false;
-    }
-}
-
 async function moduleWorker() {
     const context = getContext();
 
@@ -164,21 +143,25 @@ async function moduleWorker() {
     function addExtensionsSettings() {
         const settingsHtml = `
         <div id="floatingPrompt" class="drawer-content flexGap5">
-            <div id="floatingPromptheader" class="fa-solid fa-grip drag-grabber"></div>
+            <div class="panelControlBar flex-container">
+                <div id="floatingPromptheader" class="fa-solid fa-grip drag-grabber"></div>
+                <div id="ANClose" class="fa-solid fa-circle-xmark"></div>
+            </div>
             <div name="floatingPromptHolder">
                 <div class="inline-drawer">
                     <div id="ANBlockToggle" class="inline-drawer-toggle inline-drawer-header">
                         <b>Author's Note</b>
                         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                        
                 </div>
                 <div class="inline-drawer-content">
                     <small>
                         <b>Unique to this chat</b>.<br>
                         Bookmarks inherit the Note from their parent, and can be changed individually after that.<br>
                     </small>
-                    
+
                     <textarea id="extension_floating_prompt" class="text_pole" rows="8" maxlength="10000"></textarea>
-                    
+
                     <div class="floating_prompt_radio_group">
                         <label>
                             <input type="radio" name="extension_floating_position" value="0" />
@@ -190,9 +173,9 @@ async function moduleWorker() {
                         </label>
                     </div>
                     <!--<label for="extension_floating_interval">In-Chat Insertion Depth</label>-->
-                    
-                    <label for="extension_floating_interval">Insertion Frequency</label>                    
-                    
+
+                    <label for="extension_floating_interval">Insertion Frequency</label>
+
                     <input id="extension_floating_interval" class="text_pole widthUnset" type="number" min="0" max="999"  /><small> (0 = Disable)</small>
                     <br>
 
@@ -208,7 +191,7 @@ async function moduleWorker() {
                     </div>
                     <div class="inline-drawer-content">
                     <small>Will be automatically added as the Author's Note for all new chats.</small>
-                        
+
                         <textarea id="extension_floating_default" class="text_pole" rows="8" maxlength="10000"
                         placeholder="Example:\n[Scenario: wacky adventures; Genre: romantic comedy; Style: verbose, creative]"></textarea>
                     </div>
@@ -223,10 +206,19 @@ async function moduleWorker() {
         $('#extension_floating_depth').on('input', onExtensionFloatingDepthInput);
         $('#extension_floating_default').on('input', onExtensionFloatingDefaultInput);
         $('input[name="extension_floating_position"]').on('change', onExtensionFloatingPositionInput);
+        $('#ANClose').on('click', function () {
+            $("#floatingPrompt").transition({
+                opacity: 0,
+                duration: 200,
+                easing: 'ease-in-out',
+            });
+            setTimeout(function () { $('#floatingPrompt').hide() }, 200);
+        })
     }
 
     addExtensionsSettings();
-    setInterval(moduleWorkerWrapper, UPDATE_INTERVAL);
+    const wrapper = new ModuleWorkerWrapper(moduleWorker);
+    setInterval(wrapper.update.bind(wrapper), UPDATE_INTERVAL);
     registerSlashCommand('note', setNoteTextCommand, [], "<span class='monospace'>(text)</span> – sets an author's note for the currently selected chat", true, true);
     registerSlashCommand('depth', setNoteDepthCommand, [], "<span class='monospace'>(number)</span> – sets an author's note depth for in-chat positioning", true, true);
     registerSlashCommand('freq', setNoteIntervalCommand, ['interval'], "<span class='monospace'>(number)</span> – sets an author's note insertion frequency", true, true);
